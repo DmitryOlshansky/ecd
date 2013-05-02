@@ -75,20 +75,25 @@ private:
             size_t counter;
         }        
     }
+    pragma(msg, Node.sizeof);
 
     Node* root_;
     Allocator alloc_;
+
+    @property Node* root(size_t h){
+        return root_+(h&MASK);
+    }
     
     public this(Allocator alloc)
     {
         alloc_ = alloc;
-        root_ = make!Node(alloc_);
+        root_ = emptyArray!Node(alloc_, TSIZE);
     }
 
     public void insert(K key, V value){
         size_t h = getHash(key);
-        //TODO: insert doesn't need full path - last parent is enough
-        auto leafParent = lookupLeafAndParent(h, root_);        
+        //TODO: insert doesn't need full path - last parent is enough        
+        auto leafParent = lookupLeafAndParent(h, root(h));
         Node* n = leafParent[0];
         Node* parent = leafParent[1];
         if(n.head == null){
@@ -148,6 +153,7 @@ private:
             throw new RangeError("HashTrie - no such key");
         return entry.value;
     }
+
     /// ditto
     public void opIndexAssign(V value, K key)
     {
@@ -159,7 +165,7 @@ private:
         Node*[size_t.sizeof*8/STEP + 1] path;
         size_t h = getHash(key);
         //TODO: need more info, i.e. true full path with slots
-        size_t len = lookupLeafAndPath(h, root_, path.ptr);
+        size_t len = lookupLeafAndPath(h, root(h), path.ptr);
         Node* n = path[len-1];        
         if(n.hash != h) // the values in this slot have different hash
             return;        
@@ -195,7 +201,7 @@ private:
     Entry* lookupEntry(K key)
     {
         size_t h = getHash(key);
-        Node* p = lookupLeaf(h, root_);
+        Node* p = lookupLeaf(h, root(h));
         if(!p.head) //nothing in the slot where it should have been
             return null;
         if(p.hash != h) //this leaf can as well have different hash
@@ -213,14 +219,15 @@ private:
     debug void printStat()
     {
         size_t emptyLeaf, leaf, subTable;
-        depthFirstInOrder(root_, (Node* n){
-            if(n.subTable)
-                subTable++;
-            else if(n.head)
-                leaf++;
-            else
-                emptyLeaf++;
-        });
+        for(size_t i=0; i<TSIZE; i++)
+            depthFirstInOrder(root_+i, (Node* n){
+                if(n.subTable)
+                    subTable++;
+                else if(n.head)
+                    leaf++;
+                else
+                    emptyLeaf++;
+            });
         writefln("Tables = %d, Leafs = %d, Empty leaf = %d", 
             subTable, leaf, emptyLeaf);
 
@@ -248,14 +255,15 @@ private:
 
     public ~this()
     {
-        depthFirstPostOrder(root_,(Node* n){
-            if(n.subTable)
-                alloc_.dealloc(n.subTable);
-            //deallocate linked-list of values
-            else{
-                freeChain(n.head);
-            }
-        });
+        for(size_t i=0; i<TSIZE; i++)
+            depthFirstPostOrder(root_+i,(Node* n){
+                if(n.subTable)
+                    alloc_.dealloc(n.subTable);
+                //deallocate linked-list of values
+                else{
+                    freeChain(n.head);
+                }
+            });
         alloc_.dealloc(root_);
     }
 
@@ -267,9 +275,13 @@ private:
     debug static void printLayer(Node* node)
     {
         import std.stdio;
-        Node*[] layer = [node];
+        Node*[] layer;
+        foreach(ref v; node[0..TSIZE])
+            layer ~= &v;
         Node*[] nextLayer;
+        size_t layerCnt = 0;
         do{
+            layerCnt++;
             foreach(n; layer){
                 if(n.subTable == null){
                     //leaf
@@ -288,6 +300,7 @@ private:
             layer = nextLayer;
             nextLayer = null;
         }while(layer.length);
+        writefln("TOTAL LAYERS: %d", layerCnt);
         writeln();
     }
     
