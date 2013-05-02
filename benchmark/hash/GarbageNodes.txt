@@ -1,0 +1,98 @@
+
+The algorithm for the built in Associative Array can have deleterious effects on Garbage Collection.
+
+
+D by default uses garbage collection for memory management.
+
+This means that any blocks of memory that contain random bits can be mistaken as containing pointers to valid data, and can prevent complete memory block recycling. This leaves increasing amounts of memory garbage lying around to progressively worsen performance.
+
+Its easy to observe a slowdown of general performance after using a builtin associative array to hold a large number of randomly generated keys and values.
+
+To better observe and understand how the builtin runtime AA behaves, and to see it might be improved or better used, I created a module that implements the same algorithm as the builtin AA.  
+
+This has been added to the Dsource aa project.  trunk/hash/aatree.d.
+
+The actual AA is implemented as a class. To mimic the builtin AA, a template structure uses a reference to the class to carry out the builtin AA functions. The code was a direct adaption of the code found in the current version 2.041 of aaA.d
+
+This is a useful class because it is possible to experiment with the AA functionality without affecting or needing to rebuild the D runtime library.
+
+
+The aatree module exhibited the same slowdown behaviour as builtin AA using the random key-value test. This slowdown can be abolished by forcing the AA to clean up its nodes before the AA goes out of scope.
+
+The structures for the builtin AA is simple. The main structure is a Node, which holds the Key and its hash value, the associated data value, and 2 pointers , a left and right Node.  The pointers make up a tree of key-value pairs. All the nodes in a tree are related by having the same value of (hash % tablesize) , which gives the index into main Node pointer array. The algorithm allocates a node for every association.
+
+The other feature of the builtin AA is that it uses the TypeInfo object for the key to implement the hash and compare, and this is also done in the aatree module.
+
+The AATree class holds the table of node pointers.  As the number of nodes increases with insertions, after it is greater than 4 times the table length, the table size is increased, and a rehash operation done to redistribute the nodes. 
+
+The test main module is testhash.d. For comparison of a different algorithm, the pydict hash implementation is also tested. Being both template library modules, the relative effectiveness of the algorithms can be more equitably compared.
+
+
+These are the results of running testhash, on a windows 32bit XP OS running virtual guest on linux. From the command line, the number of runs, number of insertions, and a test selection can be chosen.
+
+50 repetitions of 500000,   -release -O   (optimise does improve performance)
+
+uint[uint]		best/average
+-------------		--------------
+PyDict		0.12/0.13 seconds
+
+
+AATree		0.36/1.13 seconds
+		Best was first run, noted to be asymptotically increasing to 1.5 seconds.
+
+Builtin (after recompile)
+		0.33/ ** The number of seconds increased with every run by about 1 second. So run 27 was 34.5 seconds, after which I did a Ctrl-C.
+
+uint[string]
+
+PyDict		0.22 insertions,  
+		0.17 lookups
+
+AATree		0.43/1.27 insertions
+		0.16/0.21 lookups
+
+Builtin - 	0.43/   insertions
+		0.16/**    lookups
+		Insertion time tends to worsen with increasing run number (noisey). Run 30 was 25 seconds.
+
+
+
+
+As another experiment, I modified aatree to use the tango Container module to allocate nodes, and coded things to ensure that this container and the aatree table_ was wiped out after each run.
+This is controlled by compiling with version=TangyHeap. tangy.util.container.Container is a D2 adjusted version of the same tango module.  I seem to have done a useful bit D2 tango adaption so far, and I wonder how many others have secret tango D2 adaptations.
+
+The pydict is a good implementation in that it combines node allocation and table in one, and so needs no special node allocation heap.
+
+
+
+This ensures that the nodes are not directly allocated by the GC, but belong to an array. This simplifies the clear() method implementation.
+
+
+The figures for AATree for this version are
+
+uint[uint]	0.23/0.23	seconds
+
+
+uint[string]	0.33/0.34 insertions
+		0.16/0.16 lookups
+
+
+There is no slowdown, and best performance yet from the AATree. The figures might be improved by tweaking or customising the Container allocation. The AATree has slightly better lookups than the pydict implementation.
+
+So the slowdown in performance from the builtin arrays is due to garbage collection failure to delete unused nodes, and also the slowdown of allocating a lot of nodes directly from the GC, possibly with a component of heap fragmentation.  The builtin AA does free individual nodes on remove, but otherwise has no built in optimal clear operation. 
+
+
+
+Without using the tangy.util.container.Container, and still properly clearing out the node table_ and nodes, the following AATree results occurred.
+
+uint[uint]	0.36/0.37	seconds
+
+
+uint[string]	0.45/0.48 insertions
+		0.20/0.21 lookups
+
+The node cleanup allocation and cleanup takes a bit more work.
+
+My conclusion is that when AA implementations are scoped or tied to classes with known lifetimes, every effort should be made to help out the garbage collector.  A clear method/property should be provided to help achieve this.  Otherwise some node may point to the table memory, and then no nodes can be freed. "clear" might not be the best name. The compiler accepted builtinAA.clear, but this seems to be generic object thing that did nothing useful.
+
+

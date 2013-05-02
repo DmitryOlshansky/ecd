@@ -1,4 +1,4 @@
-module hashtrie;
+module ecd.hashtrie;
 
 import core.exception;
 import core.bitop;
@@ -24,7 +24,7 @@ class BlockAllocator(size_t block){
 
 public struct HashTrie(K, V){
 private:
-    enum  STEP = 8, TSIZE = 1<<STEP, MASK = TSIZE-1;
+    enum  STEP = 2, TSIZE = 1<<STEP, MASK = TSIZE-1;
 
     struct Entry{
         K key;
@@ -33,13 +33,15 @@ private:
     }  
 
     struct Node{
-        Entry* head; //value (list in case of collision)
+        Node* subTable;
+        union{
+            size_t shift; //amount to shift before lookup
+            Entry* head; //value (list in case of collision)
+        }
         union{
             size_t hash; 
             size_t counter;
-        }
-        size_t shift; //amount to shift before lookup        
-        Node* subTable;
+        }        
     }
 
     Node* root_;
@@ -62,7 +64,7 @@ private:
             n.head = new Entry(key, value, null);
             n.hash = h;
             if(parent != null) //very likely
-                parent.counter++; //notify our parent - +1 in sub-table
+                parent.counter++; //notify our parent -+1 in sub-table
         }
         else {
             //not empty leaf            
@@ -93,25 +95,31 @@ private:
                 offs = (h>>shift) & MASK;
                 //writefln("Sub-table slot taken %d for hash=%d", offs, h);
                 n.subTable[offs].head = new Entry(key, value, null);
-                n.subTable[offs].hash = h;
-                n.head = null; //and scratch the old value field, just in case
+                n.subTable[offs].hash = h;                
                 n.counter = 2; //rewrite hash with counter
             }
         }
     }    
 
+    /// standard AA primitives
     public V* opBinaryRight(string op:"in")(K key)
     {
         Entry* entry = lookupEntry(key);
         return entry ? &entry.value  : null;
     }
 
+    /// ditto
     public ref V opIndex(K key)
     {
         Entry* entry = lookupEntry(key);
         if(!entry)
             throw new RangeError("HashTrie - no such key");
         return entry.value;
+    }
+    /// ditto
+    public void opIndexAssign(V value, K key)
+    {
+        insert(key, value);
     }
 
     public void remove(K key)
