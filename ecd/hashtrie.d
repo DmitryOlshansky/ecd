@@ -2,42 +2,74 @@ module ecd.hashtrie;
 
 import core.exception;
 import core.bitop;
+import core.stdc.stdlib;
+import core.stdc.string;
 
 import std.stdio;
+import std.conv;
 
 import std.typecons, std.traits;
 
 interface Allocator{
-    void* alloc(int size);
+    void* alloc(size_t size);
     void dealloc(void*block);
 }
 
-class BlockAllocator(size_t block){
-    void* alloc(int size){
-        return null;
+T* make(T, Args...)(Allocator alloc, Args args)
+{
+    void* mem = alloc.alloc(T.sizeof);
+    scope(failure) alloc.dealloc(mem);
+    return emplace(cast(T*)mem, args);
+}
+
+T* emptyArray(T)(Allocator alloc, size_t len)
+{
+    void* mem = alloc.alloc(T.sizeof*len);
+    memset(mem, 0, len*T.sizeof);
+    return cast(T*)mem;
+}
+
+class GcHeap : Allocator{
+    void* alloc(size_t size){
+        return (new void[size]).ptr;
     }
 
     void dealloc(void* block){
+    }
+}
 
+class Mallocator : Allocator{
+    void* alloc(size_t size){
+        return malloc(size);
+    }
+
+    void dealloc(void* block){
+        return free(block);
     }
 }
 
 public struct HashTrie(K, V){
 private:
-    enum  STEP = 2, TSIZE = 1<<STEP, MASK = TSIZE-1;
+    enum  STEP = 4, TSIZE = 1<<STEP, MASK = TSIZE-1;
 
     struct Entry{
         K key;
         V value;
         Entry* next; //collision chain (full-hash collision)
+        this(K k, V v, Entry* n)
+        {
+            key = k;
+            value = v;
+            next = n;
+        }
     }  
 
     struct Node{
         Node* subTable;
-        union{
+        //union{
             size_t shift; //amount to shift before lookup
             Entry* head; //value (list in case of collision)
-        }
+        //}
         union{
             size_t hash; 
             size_t counter;
@@ -50,7 +82,7 @@ private:
     public this(Allocator alloc)
     {
         alloc_ = alloc;
-        root_ = new Node;
+        root_ = make!Node(alloc_);
     }
 
     public void insert(K key, V value){
@@ -61,17 +93,17 @@ private:
         Node* parent = leafParent[1];
         if(n.head == null){
             //great - empty leaf node
-            n.head = new Entry(key, value, null);
+            n.head = make!Entry(alloc_, key, value, null);
             n.hash = h;
             if(parent != null) //very likely
-                parent.counter++; //notify our parent -+1 in sub-table
+                parent.counter++; //notify our parent - +1 in sub-table
         }
         else {
             //not empty leaf            
             if(n.hash == h){ //highly unlikely
                 //not empty leaf node, hash is the same -> full hash collision
                 //insert new item into the collision list at head
-                Entry* p = new Entry(key, value, n.head);
+                Entry* p = make!Entry(alloc_, key, value, n.head);
                 n.head = p;
                 //counter in parent stays the same
             }
@@ -84,8 +116,7 @@ private:
                 shift -= shift % STEP;
                // writeln("SHIFT:", shift);
                 n.shift = shift;
-                auto tab = new Node[TSIZE];
-                n.subTable = tab.ptr;
+                n.subTable = emptyArray!Node(alloc_, TSIZE);
                 //move the curent leaf value into the new slot sub-table
                 size_t offs = (n.hash>>shift) & MASK;
                // writeln("OFFS:", offs);                
@@ -94,9 +125,10 @@ private:
                 //and the value to insert
                 offs = (h>>shift) & MASK;
                 //writefln("Sub-table slot taken %d for hash=%d", offs, h);
-                n.subTable[offs].head = new Entry(key, value, null);
+                n.subTable[offs].head = make!Entry(alloc_, key, value, null);
                 n.subTable[offs].hash = h;                
                 n.counter = 2; //rewrite hash with counter
+                n.head = null;
             }
         }
     }    
@@ -141,17 +173,20 @@ private:
             p = p.next;
         }
         //p is a node somewhere in the collision chain
-
+        //TODO: deal with the case of p != n.head
+        freeChain(n.head);
         n.head = null;
         len--;
         while(len != 0){ //99.9% of cases, otherwise the root is leaf node
             Node* parent = path[len-1];
             parent.counter--;
-            //anti flip-flop, only kill node if count == 0
+            // anti flip-flop, only kill node if count == 0
             // don't try to convert back to leaf
             if(parent.counter != 0)
                 break;
-            parent.subTable = null; //unlink sub-table - turn into an empty leaf
+            //unlink sub-table - turn into an empty leaf
+            alloc_.dealloc(parent.subTable);
+            parent.subTable = null; 
             assert(parent.head == null);
             len--;
         }
@@ -178,7 +213,7 @@ private:
     debug void printStat()
     {
         size_t emptyLeaf, leaf, subTable;
-        depthFirst(root_, (Node* n){
+        depthFirstInOrder(root_, (Node* n){
             if(n.subTable)
                 subTable++;
             else if(n.head)
@@ -193,20 +228,42 @@ private:
             leaf ? (subTable+emptyLeaf+leaf)/cast(double)leaf : double.infinity);
     }
 
-    debug void depthFirst(Node* n, scope void delegate(Node*) functor)
+    void depthFirstInOrder(Node* n, scope void delegate(Node*) functor)
     {
         functor(n);
         if(n.subTable){
             foreach(ref s; n.subTable[0..TSIZE])
-                depthFirst(&s, functor);
+                depthFirstInOrder(&s, functor);
         }
+    }
+    
+    void depthFirstPostOrder(Node* n, scope void delegate(Node*) functor)
+    {        
+        if(n.subTable){
+            foreach(ref s; n.subTable[0..TSIZE])
+                depthFirstPostOrder(&s, functor);
+        }
+        functor(n);
+    }
+
+    public ~this()
+    {
+        depthFirstPostOrder(root_,(Node* n){
+            if(n.subTable)
+                alloc_.dealloc(n.subTable);
+            //deallocate linked-list of values
+            else{
+                freeChain(n.head);
+            }
+        });
+        alloc_.dealloc(root_);
     }
 
     debug void print()
     {
         return printLayer(root_);
     }
-
+    
     debug static void printLayer(Node* node)
     {
         import std.stdio;
@@ -232,6 +289,16 @@ private:
             nextLayer = null;
         }while(layer.length);
         writeln();
+    }
+    
+    void freeChain(Entry* chain)
+    {
+        Entry* e = chain;
+        while(e){
+            Entry* eNext = e.next;
+            alloc_.dealloc(e);
+            e = eNext;
+        }
     }
 
     // get to the leaf node for the given hash
@@ -277,10 +344,15 @@ private:
     }
 }
 
+public auto createHashTrie(K, V)()
+{
+    return HashTrie!(K, V)(new Mallocator());
+}
+
 unittest
-{    
-    auto trie = HashTrie!(int, int)(null);
-    foreach(times; 0..25){
+{        
+    foreach(times; 0..1800){
+        auto trie = HashTrie!(int, int)(new Mallocator());
         for(int i=1; i<=900; i++){
             trie.insert(i, 10*i);
         }

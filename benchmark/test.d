@@ -63,7 +63,7 @@ string[] getStringSet(uint smax, uint ntotal)
 
 void main(char[][] args)
 {
-    GC.disable();
+    //GC.disable();
 	uint bigN = 15;
 	uint dictSize = 250_000;
 	 uint[uint] aatest;
@@ -72,6 +72,8 @@ void main(char[][] args)
 	if (args.length > 1)
 	{
 		bigN = to!(uint)(args[1]);
+        if(args.length > 2)
+            dictSize = to!(uint)(args[2]);            
 	}
 	else {
 		writeln("test <N>  <dict-size> ; number of runs, dictionary size, defaults are ", bigN, " " , dictSize);
@@ -81,17 +83,19 @@ void main(char[][] args)
     //testLinear!(PyDict)();
 
   //  testRandom!(PyDict)(bigN, dictSize); //bogus
-    testRandom!(RandAA)(bigN, dictSize);
-	testRandom!(BuiltIn)(bigN, dictSize);
+
     testRandom!(HashTrie)(bigN, dictSize);	
-    /*
+//    testRandom!(BuiltIn)(bigN, dictSize);
+//    testRandom!(RandAA)(bigN, dictSize);
+/*    
 	writeln("Making string keys");
 	string[] keys = getStringSet(20, dictSize);
 	writeln("String key insertion and lookups");
-	testLinear!(PyDict)(bigN, dictSize, keys);
-    testLinear!(RandAA)(bigN, dictSize, keys);
-	testLinear!(BuiltIn)(bigN, dictSize, keys);    
-    */
+	//testLinear!(PyDict)(bigN, dictSize, keys);
+//    testLinear!(RandAA)(bigN, dictSize, keys);
+//	testLinear!(BuiltIn)(bigN, dictSize, keys);    
+    testLinear!(HashTrie)(bigN, dictSize, keys);  
+*/  
 }
 
 
@@ -117,7 +121,7 @@ void testLinear(alias AA)(uint M, uint N, string[] strings)
     double lookup_time = 0;
     double insert_time = 0;
 
-    auto timer = new StopWatch();
+    auto timer = StopWatch();
 
     // Returns a random string composed of the letters [a-z] with geometrically
     // distributed length.
@@ -128,7 +132,10 @@ void testLinear(alias AA)(uint M, uint N, string[] strings)
 
     void run(uint ix)
     {
-        auto aa = new AA!(string, uint)();
+        static if(is(AA!(string, uint) == HashTrie!(string, uint)))
+            auto aa = createHashTrie!(string, uint)();
+        else
+            auto aa = new AA!(string, uint)();
         
         //writeln("Test Linear Insert.");
         timer.reset();
@@ -152,18 +159,21 @@ void testLinear(alias AA)(uint M, uint N, string[] strings)
 		double tt = timer.peek().msecs / 1000.0;
         lookup_time += tt;
 		writeln(ix,": ", ti, "  ", tt );
-		delete aa;
-		aa = null;
+        static if(!is(AA!(string, uint) == HashTrie!(string, uint)))
+        {
+            delete aa;
+            aa = null;
+        }
     }
 
-    for (size_t i = 0; i < M; i++)
+    for (uint i = 0; i < M; i++)
     {
         run(i);
     }
 
     printf("%u x %u iterations\n", M, N);
-    printf("inserts:  %u/s (%fs)\n", cast(uint) (M * N / insert_time), (insert_time / M));
-    printf("lookups: %u/s (%fs)\n", cast(uint) (M * N / lookup_time), (lookup_time / M));
+    printf("inserts: %12u/s (%fs)\n", cast(uint) (M * N / insert_time), (insert_time / M));
+    printf("lookups: %12u/s (%fs)\n", cast(uint) (M * N / lookup_time), (lookup_time / M));
 }
 
 
@@ -176,14 +186,14 @@ void testRandom(alias AA)(uint N, uint ntotal)
 
     double time = 0;
     
-    auto timer = new StopWatch();
+    auto timer = StopWatch();
     writeln(N, " runs for ", AA.stringof);
 	
     void run(uint ix)
     {
 		static if(is(AA!(uint,uint) == HashTrie!(uint, uint)))
         {
-            auto aa = AA!(uint, uint)(null);
+            auto aa = createHashTrie!(uint, uint)();
         }
         else static if(is(AA!(uint, uint) == BuiltIn!(uint, uint)))
         {
